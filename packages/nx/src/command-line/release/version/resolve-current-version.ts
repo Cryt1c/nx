@@ -1,5 +1,6 @@
 import chalk = require('chalk');
 import { prompt } from 'enquirer';
+import * as ora from 'ora';
 import { NxReleaseVersionV2Configuration } from '../../../config/nx-json';
 import type { ProjectGraphProjectNode } from '../../../config/project-graph';
 import type { Tree } from '../../../generators/tree';
@@ -146,13 +147,21 @@ export async function resolveCurrentVersionFromRegistry(
   }
 
   let registryTxt = '';
+
+  const spinner = ora(
+    `Resolving the current version for ${projectGraphNode.name} from the configured registry...`
+  );
+  spinner.color = 'cyan';
+  spinner.start();
+
   try {
-    // TODO: add spinner here
     const { currentVersion, logText } =
       await versionActions.readCurrentVersionFromRegistry(
         tree,
         currentVersionResolverMetadata
       );
+    spinner.stop();
+
     registryTxt = logText?.length > 0 ? `: ${logText}` : '';
     if (!currentVersion) {
       throw new Error('No version found in the registry');
@@ -170,6 +179,8 @@ export async function resolveCurrentVersionFromRegistry(
     }
     return currentVersion;
   } catch {
+    spinner.stop();
+
     if (fallbackCurrentVersionResolver === 'disk') {
       const currentVersionFromDisk =
         await versionActions.readCurrentVersionFromSourceManifest(tree);

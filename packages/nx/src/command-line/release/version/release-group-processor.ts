@@ -309,17 +309,10 @@ Valid values are: ${validReleaseVersionPrefixes
             );
           }
 
-          let specifierSource: NxReleaseVersionV2Configuration['specifierSource'] =
-            'prompt';
-          const specifierSourceFromConfig =
-            projectVersionConfig?.specifierSource ||
-            releaseGroupVersionConfig?.specifierSource;
-          // The user is forcibly overriding whatever specifierSource they had otherwise set by imperatively providing a specifier
-          if (this.userGivenSpecifier) {
-            specifierSource = 'prompt';
-          } else if (specifierSourceFromConfig) {
-            specifierSource = specifierSourceFromConfig;
-          }
+          const specifierSource = this.getSpecifierSource(
+            releaseGroupNode.group,
+            projectGraphNode
+          );
 
           const fallbackCurrentVersionResolver =
             this.getFallbackCurrentVersionResolver(
@@ -725,22 +718,16 @@ Valid values are: ${validReleaseVersionPrefixes
 
     const projectGraphNode = this.projectGraph.nodes[projectName];
     const projectLogger = this.getProjectLoggerForProject(projectName);
-
-    const projectVersionConfig = projectGraphNode.data.release?.version as
-      | NxReleaseVersionV2Configuration
-      | undefined;
-    const releaseGroupVersionConfig =
-      releaseGroup.version as NxReleaseVersionV2Configuration;
-
-    // Resolve the semver relative bump via conventional-commits
-    const specifierSourceFromConfig =
-      projectVersionConfig?.specifierSource ||
-      releaseGroupVersionConfig?.specifierSource;
+    // TODO: cache project -> specifierSource
+    const specifierSource = this.getSpecifierSource(
+      releaseGroup,
+      projectGraphNode
+    );
 
     const fallbackCurrentVersionResolver =
       this.getFallbackCurrentVersionResolver(releaseGroup, projectGraphNode);
 
-    if (specifierSourceFromConfig === 'conventional-commits') {
+    if (specifierSource === 'conventional-commits') {
       const currentVersion =
         this.getCurrentCachedVersionForProject(projectName);
       const bumpType = await deriveSpecifierFromConventionalCommits(
@@ -789,7 +776,7 @@ Valid values are: ${validReleaseVersionPrefixes
       }
       return `${log} within release group "${releaseGroup.name}"`;
     };
-    if (specifierSourceFromConfig === 'prompt') {
+    if (specifierSource === 'prompt') {
       let specifier: SemverBumpType | SemverVersion;
       if (releaseGroup.projectsRelationship === 'independent') {
         specifier = await resolveSemverSpecifierFromPrompt(
@@ -817,7 +804,9 @@ Valid values are: ${validReleaseVersionPrefixes
       };
     }
 
-    throw new Error(`Unhandled version bump config`);
+    throw new Error(
+      `Unhandled version bump config, please report this as a bug on https://github.com/nrwl/nx/issues`
+    );
   }
 
   private getVersionActionsForProject(projectName: string): VersionActions {
@@ -1183,6 +1172,32 @@ Valid values are: ${validReleaseVersionPrefixes
       releaseGroupVersionConfig?.fallbackCurrentVersionResolver ??
       // Always fall back to disk if this is the first release
       (this.options.firstRelease ? 'disk' : undefined)
+    );
+  }
+
+  private getSpecifierSource(
+    releaseGroup: ReleaseGroupWithName,
+    projectGraphNode: ProjectGraphProjectNode
+  ): Exclude<NxReleaseVersionV2Configuration['specifierSource'], undefined> {
+    /**
+     * If the user has provided a specifier, it always takes precedence,
+     * so the effective specifier source is 'prompt', regardless of what
+     * the project or release group config says.
+     */
+    if (this.userGivenSpecifier) {
+      return 'prompt';
+    }
+    const releaseGroupVersionConfig = releaseGroup.version as
+      | NxReleaseVersionV2Configuration
+      | undefined;
+    const projectVersionConfig = projectGraphNode.data.release?.version as
+      | NxReleaseVersionV2Configuration
+      | undefined;
+    // The default specifier source is 'prompt'
+    return (
+      projectVersionConfig?.specifierSource ??
+      releaseGroupVersionConfig?.specifierSource ??
+      'prompt'
     );
   }
 }
