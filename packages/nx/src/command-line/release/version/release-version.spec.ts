@@ -56,7 +56,7 @@ jest.doMock('./version-actions', () => ({
   resolveVersionActionsForProject: mockResolveVersionActionsForProject,
 }));
 
-jest.doMock('./project-logger', () => ({
+jest.mock('./project-logger', () => ({
   ...jest.requireActual('./project-logger'),
   // Don't slow down or add noise to unit tests output unnecessarily
   ProjectLogger: class ProjectLogger {
@@ -2414,5 +2414,232 @@ Valid values are: "auto", "", "~", "^", "="`,
         "version": "1.0.1",
       }
     `);
+  });
+
+  describe('release-version-workspace-root-project', () => {
+    describe('independent projects relationship', () => {
+      describe('with workspace root as a project in the graph', () => {
+        it('should not error when run with custom manifestRootsToUpdate containing {projectRoot}', async () => {
+          // Create the additional expected manifests in dist (would have been created by some build process)
+          writeJson(tree, 'dist/my-lib/package.json', {
+            name: 'my-lib',
+            version: '0.0.1',
+          });
+          writeJson(
+            tree,
+            'dist/project-with-dependency-on-my-pkg/package.json',
+            {
+              name: 'project-with-dependency-on-my-pkg',
+              version: '0.0.1',
+              dependencies: {
+                'my-lib': '0.0.1',
+              },
+            }
+          );
+          writeJson(
+            tree,
+            'dist/project-with-devDependency-on-my-pkg/package.json',
+            {
+              name: 'project-with-devDependency-on-my-pkg',
+              version: '0.0.1',
+              devDependencies: {
+                'my-lib': '0.0.1',
+              },
+            }
+          );
+
+          const {
+            nxReleaseConfig,
+            projectGraph,
+            releaseGroups,
+            releaseGroupToFilteredProjects,
+            filters,
+          } = await createNxReleaseConfigAndPopulateWorkspace(
+            tree,
+            `
+              myReleaseGroup ({ "projectsRelationship": "independent" }):
+                - my-lib@0.0.1 [js]
+                - root[.]@0.0.1 [js]
+                - project-with-dependency-on-my-pkg@0.0.1 [js]
+                  -> depends on my-lib
+                - project-with-devDependency-on-my-pkg@0.0.1 [js]
+                  -> depends on my-lib {devDependencies}
+            `,
+            {
+              version: {
+                manifestRootsToUpdate: ['dist/{projectRoot}'],
+                currentVersionResolver: 'disk',
+              },
+            },
+            undefined
+          );
+
+          expect(
+            await releaseVersionGeneratorForTest(tree, {
+              nxReleaseConfig,
+              projectGraph,
+              filters,
+              releaseGroups,
+              releaseGroupToFilteredProjects,
+              userGivenSpecifier: 'patch',
+            })
+          ).toMatchInlineSnapshot(`
+            {
+              "callback": [Function],
+              "data": {
+                "my-lib": {
+                  "currentVersion": "0.0.1",
+                  "dependentProjects": [
+                    {
+                      "dependencyCollection": "dependencies",
+                      "rawVersionSpec": "0.0.1",
+                      "source": "project-with-dependency-on-my-pkg",
+                      "target": "my-lib",
+                      "type": "static",
+                    },
+                    {
+                      "dependencyCollection": "devDependencies",
+                      "rawVersionSpec": "0.0.1",
+                      "source": "project-with-devDependency-on-my-pkg",
+                      "target": "my-lib",
+                      "type": "static",
+                    },
+                  ],
+                  "newVersion": "0.0.2",
+                },
+                "project-with-dependency-on-my-pkg": {
+                  "currentVersion": "0.0.1",
+                  "dependentProjects": [],
+                  "newVersion": "0.0.2",
+                },
+                "project-with-devDependency-on-my-pkg": {
+                  "currentVersion": "0.0.1",
+                  "dependentProjects": [],
+                  "newVersion": "0.0.2",
+                },
+              },
+            }
+          `);
+        });
+
+        it('should not error when run with custom manifestRootsToUpdate containing {projectRoot} when one project does not match the others', async () => {
+          // Create the additional expected manifests in dist (would have been created by some build process)
+          writeJson(tree, 'dist/my-lib/package.json', {
+            name: 'my-lib',
+            version: '0.0.1',
+          });
+          writeJson(tree, 'dist/my-lib-2/package.json', {
+            name: 'my-lib-2',
+            version: '0.0.1',
+          });
+
+          const {
+            nxReleaseConfig,
+            projectGraph,
+            releaseGroups,
+            releaseGroupToFilteredProjects,
+            filters,
+          } = await createNxReleaseConfigAndPopulateWorkspace(
+            tree,
+            `
+              myReleaseGroup ({ "projectsRelationship": "independent" }):
+                - depends-on-my-lib@0.0.1 [js]
+                  -> depends on my-lib
+                  -> release config overrides { "version": { "manifestRootsToUpdate": ["dist/pkgs/depends-on-my-lib"] } }
+                - my-lib@0.0.1 [js]
+                - root[.]@0.0.1 [js:@proj/source]
+                - my-lib-2@0.0.1 [js]
+            `,
+            {
+              version: {
+                manifestRootsToUpdate: ['dist/{projectRoot}'],
+                currentVersionResolver: 'disk',
+              },
+            },
+            undefined,
+            {
+              // depends-on-my-lib will get its dependencies updated in package.json because my-lib is being versioned
+              // this will happen regardless of if depends-on-my-lib should be versioned
+              projects: ['my-lib', 'my-lib-2'],
+            }
+          );
+
+          expect(
+            await releaseVersionGeneratorForTest(tree, {
+              nxReleaseConfig,
+              projectGraph,
+              filters,
+              releaseGroups,
+              releaseGroupToFilteredProjects,
+              userGivenSpecifier: 'patch',
+            })
+          ).toMatchInlineSnapshot(`
+            {
+              "callback": [Function],
+              "data": {
+                "depends-on-my-lib": {
+                  "currentVersion": "0.0.1",
+                  "dependentProjects": [],
+                  "newVersion": "0.0.2",
+                },
+                "my-lib": {
+                  "currentVersion": "0.0.1",
+                  "dependentProjects": [
+                    {
+                      "dependencyCollection": "dependencies",
+                      "rawVersionSpec": "0.0.1",
+                      "source": "depends-on-my-lib",
+                      "target": "my-lib",
+                      "type": "static",
+                    },
+                  ],
+                  "newVersion": "0.0.2",
+                },
+                "my-lib-2": {
+                  "currentVersion": "0.0.1",
+                  "dependentProjects": [],
+                  "newVersion": "0.0.2",
+                },
+              },
+            }
+          `);
+
+          expect(readJson(tree, 'dist/pkgs/depends-on-my-lib/package.json'))
+            .toMatchInlineSnapshot(`
+            {
+              "dependencies": {
+                "my-lib": "0.0.2",
+              },
+              "name": "depends-on-my-lib",
+              "version": "0.0.2",
+            }
+          `);
+
+          expect(readJson(tree, 'dist/my-lib/package.json'))
+            .toMatchInlineSnapshot(`
+            {
+              "name": "my-lib",
+              "version": "0.0.2",
+            }
+          `);
+
+          expect(readJson(tree, 'dist/my-lib-2/package.json'))
+            .toMatchInlineSnapshot(`
+            {
+              "name": "my-lib-2",
+              "version": "0.0.2",
+            }
+          `);
+
+          expect(readJson(tree, 'package.json')).toMatchInlineSnapshot(`
+            {
+              "dependencies": {},
+              "devDependencies": {},
+              "name": "@proj/source",
+            }
+          `);
+        });
+      });
+    });
   });
 });

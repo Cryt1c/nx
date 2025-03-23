@@ -173,7 +173,8 @@ export class ExampleRustVersionActions extends VersionActions {
     };
   }
 
-  async writeVersionToManifests(tree: Tree, newVersion: string) {
+  async updateProjectVersion(tree: Tree, newVersion: string) {
+    const logMessages: string[] = [];
     for (const manifestPath of this.manifestsToUpdate) {
       const cargoTomlString = tree.read(manifestPath, 'utf-8')!.toString();
       const cargoToml = this.parseCargoToml(cargoTomlString);
@@ -186,10 +187,14 @@ export class ExampleRustVersionActions extends VersionActions {
       const updatedCargoTomlString =
         ExampleRustVersionActions.stringifyCargoToml(cargoToml);
       tree.write(manifestPath, updatedCargoTomlString);
+      logMessages.push(
+        `✍️  New version ${newVersion} written to manifest: ${manifestPath}`
+      );
     }
+    return logMessages;
   }
 
-  async getCurrentVersionOfDependency(
+  async readCurrentVersionOfDependency(
     tree: Tree,
     _projectGraph: ProjectGraph,
     dependencyProjectName: string
@@ -214,11 +219,19 @@ export class ExampleRustVersionActions extends VersionActions {
     return false;
   }
 
-  async updateDependencies(
+  async updateProjectDependencies(
     tree: Tree,
     _projectGraph: ProjectGraph,
     dependenciesToUpdate: Record<string, string>
-  ) {
+  ): Promise<string[]> {
+    const numDependenciesToUpdate = Object.keys(dependenciesToUpdate).length;
+    const depText =
+      numDependenciesToUpdate === 1 ? 'dependency' : 'dependencies';
+    if (numDependenciesToUpdate === 0) {
+      return [];
+    }
+
+    const logMessages: string[] = [];
     for (const manifestPath of this.manifestsToUpdate) {
       const cargoTomlString = tree.read(manifestPath, 'utf-8')!.toString();
       const cargoToml = this.parseCargoToml(cargoTomlString);
@@ -235,7 +248,12 @@ export class ExampleRustVersionActions extends VersionActions {
       const updatedCargoTomlString =
         ExampleRustVersionActions.stringifyCargoToml(cargoToml);
       tree.write(manifestPath, updatedCargoTomlString);
+
+      logMessages.push(
+        `✍️  Updated ${numDependenciesToUpdate} ${depText} in manifest: ${manifestPath}`
+      );
     }
+    return logMessages;
   }
 }
 
@@ -266,14 +284,24 @@ export function parseGraphDefinition(definition: string) {
 
     // Match project definitions with optional per-project JSON config
     const projectMatch = line.match(
-      /^- ([\w-]+)@([\d\.]+) \[(\w+)(?::([^[\]]+))?\](?:\s*\(\s*(\{.*?\})\s*\))?$/
+      /^- ([\w-]+)(?:\[([\w\/-]+)\])?@([\d\.]+) \[(\w+)(?::([^[\]]+))?\](?:\s*\(\s*(\{.*?\})\s*\))?$/
     );
     if (projectMatch) {
-      const [_, name, version, language, alternateNameInManifest, configJson] =
-        projectMatch;
+      const [
+        _,
+        name,
+        customProjectRoot,
+        version,
+        language,
+        alternateNameInManifest,
+        configJson,
+      ] = projectMatch;
 
       // Automatically add data for Rust projects
-      let projectData = {};
+      let projectData = {} as any;
+      if (customProjectRoot) {
+        projectData.root = customProjectRoot;
+      }
       if (language === 'rust') {
         projectData = {
           release: { versionActions: '__EXAMPLE_RUST_VERSION_ACTIONS__' },
@@ -297,6 +325,23 @@ export function parseGraphDefinition(definition: string) {
         alternateNameInManifest,
       };
       lastProjectName = name;
+      return;
+    }
+
+    // Match release config overrides
+    const releaseConfigMatch = line.match(
+      /^-> release config overrides (\{.*\})$/
+    );
+    if (releaseConfigMatch) {
+      const [_, releaseConfigJson] = releaseConfigMatch;
+      const releaseConfigOverrides = JSON.parse(releaseConfigJson);
+      if (!graph.projects[lastProjectName].releaseConfigOverrides) {
+        graph.projects[lastProjectName].releaseConfigOverrides = {};
+      }
+      graph.projects[lastProjectName].releaseConfigOverrides = {
+        ...graph.projects[lastProjectName].releaseConfigOverrides,
+        ...releaseConfigOverrides,
+      };
       return;
     }
 
@@ -344,6 +389,7 @@ function setupGraph(tree: any, graph: any) {
       dependsOn,
       data,
       alternateNameInManifest,
+      releaseConfigOverrides,
     } = projectData as any;
 
     const packageName = alternateNameInManifest ?? projectName;
@@ -373,7 +419,17 @@ function setupGraph(tree: any, graph: any) {
           }
         );
       }
-      writeJson(tree, `${projectName}/package.json`, packageJson);
+      writeJson(
+        tree,
+        join(data.root ?? projectName, 'package.json'),
+        packageJson
+      );
+      // Write extra manifest files if specified
+      if (releaseConfigOverrides?.version?.manifestRootsToUpdate) {
+        releaseConfigOverrides.version.manifestRootsToUpdate.forEach((root) => {
+          writeJson(tree, join(root, 'package.json'), packageJson);
+        });
+      }
     } else if (language === 'rust') {
       const cargoToml: CargoToml = {} as any;
       ExampleRustVersionActions.modifyCargoTable(
@@ -410,10 +466,14 @@ function setupGraph(tree: any, graph: any) {
         );
       }
 
-      tree.write(
-        `${projectName}/Cargo.toml`,
-        ExampleRustVersionActions.stringifyCargoToml(cargoToml)
-      );
+      const contents = ExampleRustVersionActions.stringifyCargoToml(cargoToml);
+      tree.write(join(data.root ?? projectName, 'Cargo.toml'), contents);
+      // Write extra manifest files if specified
+      if (releaseConfigOverrides?.version?.manifestRootsToUpdate) {
+        releaseConfigOverrides.version.manifestRootsToUpdate.forEach((root) => {
+          tree.write(join(root, 'Cargo.toml'), contents);
+        });
+      }
     }
 
     // Add to projectGraph nodes
@@ -431,6 +491,15 @@ function setupGraph(tree: any, graph: any) {
         packageName,
       },
     };
+
+    // Add project level release config overrides
+    if (releaseConfigOverrides) {
+      projectGraphProjectNode.data.release = {
+        ...projectGraphProjectNode.data.release,
+        ...releaseConfigOverrides,
+      };
+    }
+
     projectGraph.nodes[projectName] = projectGraphProjectNode;
 
     // Initialize dependencies

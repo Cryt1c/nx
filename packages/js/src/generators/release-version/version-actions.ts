@@ -132,7 +132,7 @@ export default class JsVersionActions extends VersionActions {
     };
   }
 
-  async getCurrentVersionOfDependency(
+  async readCurrentVersionOfDependency(
     tree: Tree,
     projectGraph: ProjectGraph,
     dependencyProjectName: string
@@ -209,20 +209,36 @@ export default class JsVersionActions extends VersionActions {
     return true;
   }
 
-  async writeVersionToManifests(tree: Tree, newVersion: string): Promise<void> {
+  async updateProjectVersion(
+    tree: Tree,
+    newVersion: string
+  ): Promise<string[]> {
+    const logMessages: string[] = [];
     for (const manifestPath of this.manifestsToUpdate) {
       updateJson(tree, manifestPath, (json) => {
         json.version = newVersion;
         return json;
       });
+      logMessages.push(
+        `✍️  New version ${newVersion} written to manifest: ${manifestPath}`
+      );
     }
+    return logMessages;
   }
 
-  async updateDependencies(
+  async updateProjectDependencies(
     tree: Tree,
     projectGraph: ProjectGraph,
     dependenciesToUpdate: Record<string, string>
-  ) {
+  ): Promise<string[]> {
+    const numDependenciesToUpdate = Object.keys(dependenciesToUpdate).length;
+    const depText =
+      numDependenciesToUpdate === 1 ? 'dependency' : 'dependencies';
+    if (numDependenciesToUpdate === 0) {
+      return [];
+    }
+
+    const logMessages: string[] = [];
     for (const manifestPath of this.manifestsToUpdate) {
       updateJson(tree, manifestPath, (json) => {
         const dependencyTypes = [
@@ -252,7 +268,12 @@ export default class JsVersionActions extends VersionActions {
 
         return json;
       });
+
+      logMessages.push(
+        `✍️  Updated ${numDependenciesToUpdate} ${depText} in manifest: ${manifestPath}`
+      );
     }
+    return logMessages;
   }
 
   private parseDependencies(

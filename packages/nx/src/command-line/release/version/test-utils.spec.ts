@@ -9,7 +9,8 @@ describe('parseGraphDefinition', () => {
             -> depends on projectE(workspace:*)
           - projectE@1.0.0 [js:@myorg/projectE]
             -> depends on projectF
-          - projectF@1.0.0 [js]
+          - projectF[custom/project/root/for/projectF]@1.0.0 [js]
+            -> release config overrides { "version": { "manifestRootsToUpdate": ["dist/something-custom/package.json"] } }
       `
     );
     expect(testGraph).toMatchInlineSnapshot(`
@@ -49,11 +50,20 @@ describe('parseGraphDefinition', () => {
           },
           "projectF": {
             "alternateNameInManifest": undefined,
-            "data": {},
+            "data": {
+              "root": "custom/project/root/for/projectF",
+            },
             "dependsOn": [],
             "group": "__default__",
             "language": "js",
             "relationship": "fixed",
+            "releaseConfigOverrides": {
+              "version": {
+                "manifestRootsToUpdate": [
+                  "dist/something-custom/package.json",
+                ],
+              },
+            },
             "version": "1.0.0",
           },
         },

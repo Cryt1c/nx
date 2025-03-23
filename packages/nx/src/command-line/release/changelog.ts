@@ -282,7 +282,7 @@ export function createAPI(overrideReleaseConfig: NxReleaseConfiguration) {
     const postGitTasks: PostGitTask[] = [];
 
     let workspaceChangelogChanges: ChangelogChange[] = [];
-    // TODO: remove this after the changelog renderer is refactored to remove coupling with git commits
+    // TODO(v22): remove this after the changelog renderer is refactored to remove coupling with git commits
     let workspaceChangelogCommits: GitCommit[] = [];
 
     // If there are multiple release groups, we'll just skip the workspace changelog anyway.
@@ -400,7 +400,7 @@ export function createAPI(overrideReleaseConfig: NxReleaseConfiguration) {
       nxReleaseConfig,
       workspaceChangelogVersion,
       changes: workspaceChangelogChanges,
-      // TODO: remove this after the changelog renderer is refactored to remove coupling with git commits
+      // TODO(v22): remove this after the changelog renderer is refactored to remove coupling with git commits
       commits: filterHiddenCommits(
         workspaceChangelogCommits,
         nxReleaseConfig.conventionalCommits
@@ -507,7 +507,7 @@ export function createAPI(overrideReleaseConfig: NxReleaseConfiguration) {
       if (releaseGroup.projectsRelationship === 'independent') {
         for (const project of projectNodes) {
           let changes: ChangelogChange[] | null = null;
-          // TODO: remove this after the changelog renderer is refactored to remove coupling with git commits
+          // TODO(v22): remove this after the changelog renderer is refactored to remove coupling with git commits
           let commits: GitCommit[];
 
           if (releaseGroup.resolvedVersionPlans) {
@@ -653,7 +653,7 @@ export function createAPI(overrideReleaseConfig: NxReleaseConfiguration) {
         }
       } else {
         let changes: ChangelogChange[] = [];
-        // TODO: remove this after the changelog renderer is refactored to remove coupling with git commits
+        // TODO(v22): remove this after the changelog renderer is refactored to remove coupling with git commits
         let commits: GitCommit[] = [];
         if (releaseGroup.resolvedVersionPlans) {
           changes = (releaseGroup.resolvedVersionPlans as GroupVersionPlan[])
@@ -1377,7 +1377,7 @@ function filterHiddenChanges(
   });
 }
 
-// TODO: remove this after the changelog renderer is refactored to remove coupling with git commits
+// TODO(v22): remove this after the changelog renderer is refactored to remove coupling with git commits
 function filterHiddenCommits(
   commits: GitCommit[],
   conventionalCommitsConfig: NxReleaseConfig['conventionalCommits']

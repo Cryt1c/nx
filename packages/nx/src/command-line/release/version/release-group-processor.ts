@@ -358,7 +358,7 @@ Valid values are: ${validReleaseVersionPrefixes
         const versionActions =
           this.getVersionActionsForProject(dependentProjectName);
         const { currentVersion, dependencyCollection } =
-          await versionActions.getCurrentVersionOfDependency(
+          await versionActions.readCurrentVersionOfDependency(
             this.tree,
             this.projectGraph,
             projectName
@@ -609,13 +609,18 @@ Valid values are: ${validReleaseVersionPrefixes
         );
       }
 
-      // Write the new version to the configured manifests to update
-      await versionActions.writeVersionToManifests(this.tree, newVersion);
-      for (const manifestPath of versionActions.manifestsToUpdate) {
-        projectLogger.buffer(
-          `✍️  New version ${newVersion} written to manifest: ${manifestPath}`
-        );
+      /**
+       * Update the project's version based on the implementation details of the configured VersionActions
+       * and display any returned log messages to the user.
+       */
+      const logMessages = await versionActions.updateProjectVersion(
+        this.tree,
+        newVersion
+      );
+      for (const logMessage of logMessages) {
+        projectLogger.buffer(logMessage);
       }
+
       this.bumpedProjects.add(project);
       bumped = true;
 
@@ -913,7 +918,7 @@ Valid values are: ${validReleaseVersionPrefixes
         const targetVersionData = this.versionData.get(dep.target);
         if (targetVersionData) {
           const { currentVersion: currentDependencyVersion } =
-            await versionActions.getCurrentVersionOfDependency(
+            await versionActions.readCurrentVersionOfDependency(
               this.tree,
               this.projectGraph,
               dep.target
@@ -948,21 +953,14 @@ Valid values are: ${validReleaseVersionPrefixes
       }
     }
 
-    const numDependenciesToUpdate = Object.keys(dependenciesToUpdate).length;
-    if (numDependenciesToUpdate > 0) {
-      const projectLogger = this.getProjectLoggerForProject(projectName);
-      const depText =
-        numDependenciesToUpdate === 1 ? 'dependency' : 'dependencies';
-      await versionActions.updateDependencies(
-        this.tree,
-        this.projectGraph,
-        dependenciesToUpdate
-      );
-      for (const manifestPath of versionActions.manifestsToUpdate) {
-        projectLogger.buffer(
-          `✍️  Updated ${numDependenciesToUpdate} ${depText} in manifest: ${manifestPath}`
-        );
-      }
+    const projectLogger = this.getProjectLoggerForProject(projectName);
+    const logMessages = await versionActions.updateProjectDependencies(
+      this.tree,
+      this.projectGraph,
+      dependenciesToUpdate
+    );
+    for (const logMessage of logMessages) {
+      projectLogger.buffer(logMessage);
     }
   }
 
@@ -990,12 +988,16 @@ Valid values are: ${validReleaseVersionPrefixes
       bumpTypeReasonData
     );
 
-    // Write the new version to the configured manifests to update
-    await versionActions.writeVersionToManifests(this.tree, newVersion);
-    for (const manifestPath of versionActions.manifestsToUpdate) {
-      projectLogger.buffer(
-        `✍️  New version ${newVersion} written to manifest: ${manifestPath}`
-      );
+    /**
+     * Update the project's version based on the implementation details of the configured VersionActions
+     * and display any returned log messages to the user.
+     */
+    const logMessages = await versionActions.updateProjectVersion(
+      this.tree,
+      newVersion
+    );
+    for (const logMessage of logMessages) {
+      projectLogger.buffer(logMessage);
     }
 
     // Update version data and bumped projects

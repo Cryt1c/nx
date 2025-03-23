@@ -62,7 +62,12 @@ export async function resolveCurrentVersion(
 
   switch (currentVersionResolver) {
     case 'disk': {
-      return resolveCurrentVersionFromDisk(tree, versionActions, logger);
+      return resolveCurrentVersionFromDisk(
+        tree,
+        projectGraphNode,
+        versionActions,
+        logger
+      );
     }
     case 'registry': {
       return resolveCurrentVersionFromRegistry(
@@ -100,9 +105,15 @@ export async function resolveCurrentVersion(
 
 export async function resolveCurrentVersionFromDisk(
   tree: Tree,
+  projectGraphNode: ProjectGraphProjectNode,
   versionActions: VersionActions,
   logger: ProjectLogger
 ): Promise<string> {
+  if (!versionActions.manifestFilename) {
+    throw new Error(
+      `For project "${projectGraphNode.name}", the "currentVersionResolver" is set to "disk" but it is using "versionActions" of type "${versionActions.constructor.name}". This is invalid because "${versionActions.constructor.name}" does not support a manifest file. You should use a different "currentVersionResolver" or use a different "versionActions" implementation that supports a manifest file`
+    );
+  }
   const currentVersion =
     await versionActions.readCurrentVersionFromSourceManifest(tree);
   const sourceManifestPath = versionActions.getSourceManifestPath();

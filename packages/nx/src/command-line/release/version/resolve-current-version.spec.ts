@@ -34,10 +34,10 @@ describe('resolveCurrentVersion', () => {
           dependencies: {},
         };
       }
-      async writeVersionToManifests() {
-        return;
+      async updateProjectVersion() {
+        return [];
       }
-      async getCurrentVersionOfDependency() {
+      async readCurrentVersionOfDependency() {
         return {
           currentVersion: '1.2.3',
           dependencyCollection: 'dependencies',
@@ -46,8 +46,8 @@ describe('resolveCurrentVersion', () => {
       isLocalDependencyProtocol() {
         return false;
       }
-      async updateDependencies() {
-        return;
+      async updateProjectDependencies() {
+        return [];
       }
     }
 
@@ -119,6 +119,76 @@ describe('resolveCurrentVersion', () => {
         undefined
       );
       expect(currentVersion).toBe('1.2.3');
+    });
+
+    it('should throw an error if the currentVersionResolver is set to disk but the configured versionActions does not support a manifest file', async () => {
+      const projectGraphNode: ProjectGraphProjectNode = {
+        name: 'test',
+        type: 'lib' as const,
+        data: {
+          root: tree.root,
+          release: {
+            version: {
+              currentVersionResolver: 'disk',
+            },
+          },
+        },
+      };
+      const releaseGroup = {
+        name: 'release-group',
+      } as unknown as ReleaseGroupWithName;
+
+      class TestVersionActionsWithoutManifest extends VersionActions {
+        manifestFilename = null;
+
+        async readCurrentVersionFromSourceManifest() {
+          return null;
+        }
+        async readCurrentVersionFromRegistry() {
+          return {
+            currentVersion: '1.2.3',
+            logText: 'https://example.com/fake-registry',
+          };
+        }
+        async readSourceManifestData() {
+          return null;
+        }
+        async updateProjectVersion() {
+          return [];
+        }
+        async readCurrentVersionOfDependency() {
+          return {
+            currentVersion: '1.2.3',
+            dependencyCollection: 'dependencies',
+          };
+        }
+        isLocalDependencyProtocol() {
+          return false;
+        }
+        async updateProjectDependencies() {
+          return [];
+        }
+      }
+
+      await expect(
+        resolveCurrentVersion(
+          tree,
+          projectGraphNode,
+          releaseGroup,
+          new TestVersionActionsWithoutManifest(
+            {},
+            releaseGroup,
+            projectGraphNode,
+            []
+          ),
+          new TestProjectLogger(projectGraphNode.name),
+          new Map(),
+          undefined,
+          undefined
+        )
+      ).rejects.toThrowErrorMatchingInlineSnapshot(
+        `"For project "test", the "currentVersionResolver" is set to "disk" but it is using "versionActions" of type "TestVersionActionsWithoutManifest". This is invalid because "TestVersionActionsWithoutManifest" does not support a manifest file. You should use a different "currentVersionResolver" or use a different "versionActions" implementation that supports a manifest file"`
+      );
     });
   });
 });
