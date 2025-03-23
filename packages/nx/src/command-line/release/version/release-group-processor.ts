@@ -1341,8 +1341,12 @@ Valid values are: ${validReleaseVersionPrefixes
         }
       }
     } else {
+      const releaseGroupText =
+        releaseGroupName !== IMPLICIT_DEFAULT_RELEASE_GROUP
+          ? ` in release group "${releaseGroupName}" `
+          : '';
       projectLogger.buffer(
-        `⏩ Skipping dependent updates as "updateDependents" in release group "${releaseGroupName}" is not "auto"`
+        `⏩ Skipping dependent updates as "updateDependents"${releaseGroupText}is not "auto"`
       );
     }
   }
