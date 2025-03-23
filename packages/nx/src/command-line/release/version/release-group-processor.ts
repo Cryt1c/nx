@@ -13,11 +13,12 @@ import {
 import type { ReleaseGroupWithName } from '../config/filter-release-groups';
 import { getLatestGitTagForPattern } from '../utils/git';
 import { resolveSemverSpecifierFromPrompt } from '../utils/resolve-semver-specifier';
-import { isRelativeVersionKeyword } from '../utils/semver';
 import {
   deriveNewSemverVersion,
-  validReleaseVersionPrefixes,
-} from '../version';
+  isRelativeVersionKeyword,
+} from '../utils/semver';
+import type { VersionData, VersionDataEntry } from '../utils/shared';
+import { validReleaseVersionPrefixes } from '../version';
 import { deriveSpecifierFromConventionalCommits } from './derive-specifier-from-conventional-commits';
 import { deriveSpecifierFromVersionPlan } from './deriver-specifier-from-version-plans';
 import { ProjectLogger } from './project-logger';
@@ -34,33 +35,9 @@ interface GroupNode {
   dependents: Set<string>;
 }
 
-// TODO: Check this old TODO is still accurate :D
-// TODO: updateDependents of never is maybe not named intuitively. Currently the dep is bumped in the relevant manifest, it's just the version of the manifest that isn't.
-// Does "never" really suggest it should be doing nothing at all to dependents? Probably... Maybe we need a third mode...
-
-export interface VersionData {
-  currentVersion: string;
-  /**
-   * newVersion will be null in the case that no changes are detected for the project,
-   * e.g. when using conventional commits
-   */
-  newVersion: string | null;
-  /**
-   * The list of projects which depend upon the current project.
-   */
-  dependentProjects: {
-    source: string;
-    target: string;
-    type: string;
-    dependencyCollection: string;
-    rawVersionSpec: string;
-  }[];
-}
-
 // Any semver version string such as "1.2.3" or "1.2.3-beta.1"
 type SemverVersion = string;
 
-// TODO: add more interpolated data for richer logging (versionPlan is the only one currently)
 const BUMP_TYPE_REASON_TEXT = {
   DEPENDENCY_WAS_BUMPED: ', because a dependency was bumped, ',
   USER_SPECIFIER: ', from the given specifier, ',
@@ -110,7 +87,7 @@ export class ReleaseGroupProcessor {
   private updateDependents: 'auto' | 'never';
   private versionData: Map<
     string, // project name
-    VersionData
+    VersionDataEntry
   > = new Map();
   private allProjectsConfiguredForNxRelease: Set<string>;
   private projectsToProcess: Set<string>;
@@ -134,7 +111,7 @@ export class ReleaseGroupProcessor {
    */
   private cachedDependentProjects: Map<
     string, // project name
-    VersionData['dependentProjects']
+    VersionDataEntry['dependentProjects']
   > = new Map();
   /**
    * In the case of fixed release groups that are configured to resolve the current version from a registry
@@ -150,6 +127,11 @@ export class ReleaseGroupProcessor {
     }
   > = new Map();
   private projectLoggers: Map<string, ProjectLogger> = new Map();
+  /**
+   * Track the version plan files that have been processed so that we can delete them after versioning is complete,
+   * while leaving any unprocessed files in place.
+   */
+  private processedVersionPlanFiles = new Set<string>();
 
   constructor(
     private tree: Tree,
@@ -353,7 +335,7 @@ Valid values are: ${validReleaseVersionPrefixes
     // Populate the full data for the cached dependent projects now that all versionActions are available
     for (const [projectName, dependentProjectNames] of this
       .tmpCachedDependentProjects) {
-      const dependentProjectsData: VersionData['dependentProjects'] = [];
+      const dependentProjectsData: VersionDataEntry['dependentProjects'] = [];
       for (const dependentProjectName of dependentProjectNames) {
         const versionActions =
           this.getVersionActionsForProject(dependentProjectName);
@@ -413,6 +395,16 @@ Valid values are: ${validReleaseVersionPrefixes
     for (const projectLogger of this.projectLoggers.values()) {
       projectLogger.flush();
     }
+  }
+
+  deleteProcessedVersionPlanFiles(): void {
+    for (const versionPlanPath of this.processedVersionPlanFiles) {
+      this.tree.delete(versionPlanPath);
+    }
+  }
+
+  getVersionData(): VersionData {
+    return Object.fromEntries(this.versionData);
   }
 
   /**
@@ -764,7 +756,9 @@ Valid values are: ${validReleaseVersionPrefixes
           projectGraphNode,
           currentVersion
         );
-      // TODO: handle deleting version plans after versioning here
+      if (bumpType !== 'none') {
+        this.processedVersionPlanFiles.add(versionPlanPath);
+      }
       return {
         bumpType,
         bumpTypeReason: 'VERSION_PLANS',
@@ -860,7 +854,7 @@ Valid values are: ${validReleaseVersionPrefixes
     const bumpTypeReasonText = BUMP_TYPE_REASON_TEXT[bumpTypeReason];
     if (!bumpTypeReasonText) {
       throw new Error(
-        `Unhandled bump type reason for ${project} with bump type ${bumpType} and bump type reason ${bumpTypeReason}`
+        `Unhandled bump type reason for ${project} with bump type ${bumpType} and bump type reason ${bumpTypeReason}, please report this as a bug on https://github.com/nrwl/nx/issues`
       );
     }
     const interpolatedBumpTypeReasonText = interpolate(
@@ -1046,17 +1040,13 @@ Valid values are: ${validReleaseVersionPrefixes
     }
   }
 
-  public getVersionData(): Record<string, VersionData> {
-    return Object.fromEntries(this.versionData);
-  }
-
   private getCachedDependentProjects(
     project: string
-  ): VersionData['dependentProjects'] {
+  ): VersionDataEntry['dependentProjects'] {
     return this.cachedDependentProjects.get(project) || [];
   }
 
-  async propagateChanges(
+  private async propagateChanges(
     releaseGroupName: string,
     changedDependencyGroup: string
   ): Promise<void> {
@@ -1086,38 +1076,6 @@ Valid values are: ${validReleaseVersionPrefixes
         );
         groupBumped = bumpType !== 'none';
       }
-    } else {
-      // TODO: Figure out if this code path is ever actually needed, it does not seem to be across our e2e or unit tests...
-      //
-      // For independent groups, we need to check each project individually
-      // for (const project of releaseGroupFilteredProjects) {
-      //   const dependencies = this.projectGraph.dependencies[project] || [];
-      //   const hasDependencyInChangedGroup = dependencies.some(
-      //     (dep) =>
-      //       this.findGroupForProject(dep.target) === changedDependencyGroup
-      //   );
-      //   if (hasDependencyInChangedGroup) {
-      //     const dependencyBumpType = await this.getGroupBumpType(
-      //       changedDependencyGroup
-      //     );
-      //     const projectBumpType = this.determineSideEffectBump(
-      //       releaseGroup,
-      //       dependencyBumpType as SemverBumpType
-      //     );
-      //     if (projectBumpType !== 'none') {
-      //       groupBumped = true;
-      //       if (!this.bumpedProjects.has(project)) {
-      //         await this.bumpVersionForProject(
-      //           project,
-      //           projectBumpType,
-      //           'UNHANDLED' as any,
-      //           {}
-      //         );
-      //         this.bumpedProjects.add(project);
-      //       }
-      //     }
-      //   }
-      // }
     }
 
     if (groupBumped) {

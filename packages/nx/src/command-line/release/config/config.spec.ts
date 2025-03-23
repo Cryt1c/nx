@@ -12345,7 +12345,6 @@ describe('createNxReleaseConfig()', () => {
                 "releaseTagPatternCheckAllBranchesWhen": undefined,
                 "version": {
                   "conventionalCommits": false,
-                  "deleteVersionPlans": true,
                   "groupPreVersionCommand": "",
                   "logUnchangedProjects": true,
                   "preserveLocalDependencyProtocols": true,
@@ -12368,7 +12367,6 @@ describe('createNxReleaseConfig()', () => {
             "version": {
               "conventionalCommits": false,
               "currentVersionResolver": undefined,
-              "deleteVersionPlans": true,
               "git": {
                 "commit": false,
                 "commitArgs": "",

@@ -16,6 +16,8 @@ export async function deriveSpecifierFromConventionalCommits(
   projectLogger: ProjectLogger,
   releaseGroup: ReleaseGroupWithName,
   projectGraphNode: ProjectGraphProjectNode,
+  // NOTE: This TODO was carried over from the original version generator.
+  //
   // TODO: reevaluate this prerelease logic/workflow for independent projects
   // Always assume that if the current version is a prerelease, then the next version should be a prerelease.
   // Users must manually graduate from a prerelease to a release by providing an explicit specifier.

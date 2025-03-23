@@ -61,7 +61,6 @@ export async function resolveSemverSpecifierFromPrompt(
       return reply.specifier;
     }
   } catch {
-    // TODO: log the error to the user?
     // We need to catch the error from enquirer prompt, otherwise yargs will print its help
     process.exit(1);
   }

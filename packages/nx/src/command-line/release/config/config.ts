@@ -300,12 +300,6 @@ export async function createNxReleaseConfig(
                   | NxReleaseVersionV2Configuration
                   | undefined
               )?.updateDependents ?? 'auto',
-            deleteVersionPlans:
-              (
-                userConfig.version as
-                  | NxReleaseVersionV2Configuration
-                  | undefined
-              )?.deleteVersionPlans ?? true,
           }),
     } as DeepRequired<NxReleaseConfiguration['version']>,
     changelog: {

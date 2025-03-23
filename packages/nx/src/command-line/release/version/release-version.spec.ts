@@ -11,7 +11,8 @@ import {
 import { output } from '../../../utils/output';
 import { NxReleaseConfig } from '../config/config';
 import { ReleaseGroupWithName } from '../config/filter-release-groups';
-import { ReleaseGroupProcessor, VersionData } from './release-group-processor';
+import { VersionData } from '../utils/shared';
+import { ReleaseGroupProcessor } from './release-group-processor';
 import {
   createNxReleaseConfigAndPopulateWorkspace,
   mockResolveVersionActionsForProjectImplementation,
@@ -69,7 +70,7 @@ jest.mock('./project-logger', () => ({
 process.env.NX_DAEMON = 'false';
 
 type ReleaseVersionGeneratorResult = {
-  data: Record<string, VersionData>;
+  data: VersionData;
   callback: (
     tree: Tree,
     opts: {

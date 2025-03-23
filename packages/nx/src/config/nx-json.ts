@@ -140,7 +140,8 @@ export interface NxReleaseVersionV2Configuration {
    */
   versionPrefix?: (typeof validReleaseVersionPrefixes)[number];
   /**
-   * Whether to delete the processed version plans file after versioning is complete.
+   * Whether to delete the processed version plans file after versioning is complete. This is false by default because the
+   * version plans are also needed for changelog generation.
    */
   deleteVersionPlans?: boolean;
   /**

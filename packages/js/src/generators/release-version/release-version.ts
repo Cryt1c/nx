@@ -33,7 +33,7 @@ import {
   VersionData,
   deriveNewSemverVersion,
   validReleaseVersionPrefixes,
-} from 'nx/src/command-line/release/version';
+} from 'nx/src/command-line/release/version-legacy';
 import { interpolate } from 'nx/src/tasks-runner/utils';
 import * as ora from 'ora';
 import { ReleaseType, gt, inc, prerelease } from 'semver';

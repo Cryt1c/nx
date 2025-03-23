@@ -786,8 +786,8 @@
           },
           "deleteVersionPlans": {
             "type": "boolean",
-            "description": "Whether to delete the processed version plans file after versioning is complete.",
-            "default": true
+            "description": "Whether to delete the processed version plans file after versioning is complete. This is false by default because the version plans are also needed for changelog generation.",
+            "default": false
           },
           "updateDependents": {
             "type": "string",

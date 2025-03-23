@@ -47,11 +47,6 @@ import { shouldUseLegacyVersioning } from './config/use-legacy-versioning';
 const LARGE_BUFFER = 1024 * 1000000;
 
 // Reexport some utils for use in plugin release-version generator implementations
-export { deriveNewSemverVersion } from './utils/semver';
-export type {
-  ReleaseVersionGeneratorResult,
-  VersionData,
-} from './utils/shared';
 
 export const validReleaseVersionPrefixes = ['auto', '', '~', '^', '='] as const;
 
@@ -183,7 +178,6 @@ export function createAPI(overrideReleaseConfig: NxReleaseConfiguration) {
       }
     }
 
-    // TODO: actually delete version plans after versioning, currently not done in new versioning
     if (args.deleteVersionPlans === undefined) {
       // default to not delete version plans after versioning as they may be needed for changelog generation
       args.deleteVersionPlans = false;
@@ -245,6 +239,11 @@ export function createAPI(overrideReleaseConfig: NxReleaseConfiguration) {
     try {
       await processor.buildGroupGraph();
       await processor.processGroups();
+
+      // Delete processed version plan files if applicable
+      if (args.deleteVersionPlans) {
+        processor.deleteProcessedVersionPlanFiles();
+      }
     } catch (err: any) {
       // Flush any pending project logs before printing the error to make troubleshooting easier
       processor.flushAllProjectLoggers();

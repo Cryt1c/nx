@@ -34,16 +34,20 @@ import { gitAdd, gitPush, gitTag } from './utils/git';
 import { printDiff } from './utils/print-changes';
 import { resolveNxJsonConfigErrorMessage } from './utils/resolve-nx-json-error-message';
 import {
-  ReleaseVersionGeneratorResult,
-  VersionData,
   commitChanges,
   createCommitMessageValues,
   createGitTagValues,
   handleDuplicateGitTags,
 } from './utils/shared';
+import type {
+  ReleaseVersionGeneratorResult,
+  VersionData,
+} from './utils/shared-legacy';
 import { NxReleaseVersionResult } from './version';
 
-const LARGE_BUFFER = 1024 * 1000000;
+// Re-export some utils for use in plugin release-version generator implementations
+export { deriveNewSemverVersion } from './utils/semver';
+export type { ReleaseVersionGeneratorResult, VersionData };
 
 export const validReleaseVersionPrefixes = ['auto', '', '~', '^', '='] as const;
 
@@ -84,6 +88,8 @@ export interface ReleaseVersionGeneratorSchema {
    */
   preserveLocalDependencyProtocols?: boolean;
 }
+
+const LARGE_BUFFER = 1024 * 1000000;
 
 export async function releaseVersionLegacy(
   projectGraph: ProjectGraph,
