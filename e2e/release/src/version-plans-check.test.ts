@@ -91,6 +91,7 @@ describe('nx release version plans check command', () => {
 
       Learn more about version plans here: https://nx.dev/recipes/nx-release/file-based-versioning-version-plans
 
+
     `);
 
     // Enable version plans

@@ -237,7 +237,7 @@ export function createAPI(overrideReleaseConfig: NxReleaseConfiguration) {
     );
 
     try {
-      await processor.buildGroupGraph();
+      await processor.init();
       await processor.processGroups();
 
       // Delete processed version plan files if applicable

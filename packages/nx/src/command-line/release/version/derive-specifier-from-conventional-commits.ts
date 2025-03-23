@@ -1,4 +1,3 @@
-import { NxReleaseVersionV2Configuration } from '../../../config/nx-json';
 import type {
   ProjectGraph,
   ProjectGraphProjectNode,
@@ -28,22 +27,6 @@ export async function deriveSpecifierFromConventionalCommits(
   fallbackCurrentVersionResolver?: 'disk',
   preid?: string
 ): Promise<SemverBumpType> {
-  const projectVersionConfig = projectGraphNode.data.release?.version as
-    | NxReleaseVersionV2Configuration
-    | undefined;
-  const releaseGroupVersionConfig =
-    releaseGroup.version as NxReleaseVersionV2Configuration;
-
-  // TODO: Move this validation up a level?
-  const currentVersionResolver =
-    projectVersionConfig?.currentVersionResolver ||
-    releaseGroupVersionConfig?.currentVersionResolver;
-  if (currentVersionResolver !== 'git-tag') {
-    throw new Error(
-      `Invalid currentVersionResolver "${currentVersionResolver}" provided for project "${projectGraphNode.name}". Must be "git-tag" when "specifierSource" is "conventional-commits"`
-    );
-  }
-
   const affectedProjects =
     releaseGroup.projectsRelationship === 'independent'
       ? [projectGraphNode.name]

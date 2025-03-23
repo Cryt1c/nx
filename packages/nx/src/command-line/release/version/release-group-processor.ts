@@ -23,6 +23,7 @@ import { deriveSpecifierFromConventionalCommits } from './derive-specifier-from-
 import { deriveSpecifierFromVersionPlan } from './deriver-specifier-from-version-plans';
 import { ProjectLogger } from './project-logger';
 import { resolveCurrentVersion } from './resolve-current-version';
+import { topologicalSort } from './topological-sort';
 import {
   resolveVersionActionsForProject,
   SemverBumpType,
@@ -68,57 +69,120 @@ interface ReleaseGroupProcessorOptions {
   };
 }
 
-// TODO: Can we make the implementation more efficient if we sort the projects from the projectGraph topologically upfront?
-
 export class ReleaseGroupProcessor {
+  /**
+   * Stores the relationships between release groups, including their dependencies
+   * and dependents. This is used for determining processing order and propagating
+   * version changes between related groups.
+   */
   private groupGraph: Map<string, GroupNode> = new Map();
+
+  /**
+   * Tracks which release groups have already been processed to avoid
+   * processing them multiple times. Used during the group traversal.
+   */
   private processedGroups: Set<string> = new Set();
+
+  /**
+   * Keeps track of which projects have already had their versions bumped.
+   * This is used to avoid redundant version bumping and to determine which
+   * projects need their dependencies updated.
+   */
   private bumpedProjects: Set<string> = new Set();
+
+  /**
+   * Cache of release groups sorted in topological order to ensure dependencies
+   * are processed before dependents. Computed once and reused throughout processing.
+   */
+  private sortedReleaseGroups: string[] = [];
+
+  /**
+   * Maps each release group to its projects sorted in topological order.
+   * Ensures projects are processed after their dependencies within each group.
+   */
+  private sortedProjects: Map<string, string[]> = new Map();
+
   /**
    * Track the unique versionActions involved in the current versioning process so that we can
    * reliably invoke certain static lifecycle methods once per versionActions type, rather than
    * simply once per project.
    */
   private uniqueVersionActions: Map<string, typeof VersionActions> = new Map();
+
   /**
    * Track the versionActions for each project so that we can invoke certain instance methods.
    */
   private projectsToVersionActions: Map<string, VersionActions> = new Map();
-  private updateDependents: 'auto' | 'never';
+
+  /**
+   * versionData that will ultimately be returned to the nx release version handler by getVersionData()
+   */
   private versionData: Map<
     string, // project name
     VersionDataEntry
   > = new Map();
-  private allProjectsConfiguredForNxRelease: Set<string>;
-  private projectsToProcess: Set<string>;
-  private allProjectsToProcess: Set<string>;
+
+  /**
+   * Set of all projects that are configured in the nx release config.
+   * Used to validate dependencies and identify projects that should be updated.
+   */
+  private allProjectsConfiguredForNxRelease: Set<string> = new Set();
+
+  /**
+   * Set of projects that will be processed in the current run.
+   * This is potentially a subset of allProjectsConfiguredForNxRelease based on filters
+   * and dependency relationships.
+   */
+  private allProjectsToProcess: Set<string> = new Set();
+
+  /**
+   * If the user provided a specifier at the time of versioning we store it here so that it can take priority
+   * over any configuration.
+   */
   private userGivenSpecifier: string | undefined;
+
+  /**
+   * Caches the current version of each project to avoid repeated disk/registry/git tag lookups.
+   * Often used during new version calculation.
+   */
   private cachedCurrentVersions: Map<
     string, // project name
     string // current version
   > = new Map();
+
+  /**
+   * Caches git tag information for projects that resolve their version from git tags.
+   * This avoids performing expensive git operations multiple times for the same project.
+   */
   private cachedLatestMatchingGitTag: Map<
     string, // project name
     Awaited<ReturnType<typeof getLatestGitTagForPattern>>
   > = new Map();
+
+  /**
+   * Temporary storage for dependent project names while building the dependency graph.
+   * This is used as an intermediate step before creating the full dependent projects data.
+   */
   private tmpCachedDependentProjects: Map<
     string, // project name
     string[] // dependent project names
   > = new Map();
+
   /**
    * Resolve the data regarding dependent projects for each project upfront so that it remains accurate
    * even after updates are applied to manifests.
    */
-  private cachedDependentProjects: Map<
+  private originalDependentProjectsPerProject: Map<
     string, // project name
     VersionDataEntry['dependentProjects']
   > = new Map();
+
   /**
    * In the case of fixed release groups that are configured to resolve the current version from a registry
    * or a git tag, it would be a waste of time and resources to resolve the current version for each individual
    * project, therefore we maintain a cache of the current version for each applicable fixed release group here.
    */
-  private cachedCurrentVersionsPerFixedReleaseGroup: Map<
+  private currentVersionsPerFixedReleaseGroup: Map<
     string, // release group name
     {
       currentVersion: string;
@@ -126,12 +190,52 @@ export class ReleaseGroupProcessor {
       logText: string;
     }
   > = new Map();
-  private projectLoggers: Map<string, ProjectLogger> = new Map();
+
   /**
-   * Track the version plan files that have been processed so that we can delete them after versioning is complete,
+   * Cache of project loggers for each project.
+   */
+  private projectLoggers: Map<string, ProjectLogger> = new Map();
+
+  /**
+   * Track any version plan files that have been processed so that we can delete them after versioning is complete,
    * while leaving any unprocessed files in place.
    */
   private processedVersionPlanFiles = new Set<string>();
+
+  /**
+   * Certain configuration options can be overridden at the project level, and otherwise fall back to the release group level.
+   * Many also have a specific default value if nothing is set at either level. To avoid applying this hierarchy for each project
+   * every time such a configuration option is needed, we cache the result per project here.
+   */
+  private finalConfigsByProject: Map<string, NxReleaseVersionV2Configuration> =
+    new Map();
+
+  /**
+   * Maps each project to its release group for quick O(1) lookups.
+   * This avoids having to scan through all release groups to find a project.
+   */
+  private projectToReleaseGroup: Map<string, ReleaseGroupWithName> = new Map();
+
+  /**
+   * Maps each project to its dependents (projects that depend on it).
+   * This is the inverse of the projectToDependencies map and enables
+   * efficient lookup of dependent projects for propagating version changes.
+   */
+  private projectToDependents: Map<string, Set<string>> = new Map();
+
+  /**
+   * Maps each project to its dependencies (projects it depends on).
+   * Used for building dependency graphs and determining processing order.
+   */
+  private projectToDependencies: Map<string, Set<string>> = new Map();
+
+  /**
+   * Caches the updateDependents setting for each project to avoid repeated
+   * lookups and calculations. This determines if dependent projects should
+   * be automatically updated when a dependency changes.
+   */
+  private projectToUpdateDependentsSetting: Map<string, 'auto' | 'never'> =
+    new Map();
 
   constructor(
     private tree: Tree,
@@ -146,63 +250,26 @@ export class ReleaseGroupProcessor {
   ) {
     // Strip any leading "v" from the user given specifier, if it exists
     this.userGivenSpecifier = options.userGivenSpecifier?.replace(/^v/, '');
-
-    this.updateDependents =
-      ((this.nxReleaseConfig.version as NxReleaseVersionV2Configuration)
-        ?.updateDependents as 'auto' | 'never') || 'auto';
-
-    this.allProjectsConfiguredForNxRelease = new Set();
-    for (const group of Object.values(this.nxReleaseConfig.groups)) {
-      for (const project of group.projects) {
-        this.allProjectsConfiguredForNxRelease.add(project);
-      }
-    }
-
-    this.projectsToProcess = new Set(
-      this.options.filters.projects || this.allProjectsConfiguredForNxRelease
-    );
-    this.allProjectsToProcess = new Set(this.projectsToProcess);
-
-    const projectsToProcess = Array.from(this.projectsToProcess);
-    let dependents = this.getAllNonImplicitDependents(projectsToProcess);
-    while (dependents.length > 0) {
-      // Only add the dependents to allProjectsToProcess if updateDependents is set to auto
-      if (this.updateDependents === 'auto') {
-        dependents.forEach((dep) => this.allProjectsToProcess.add(dep));
-      }
-      dependents = this.getAllNonImplicitDependents(dependents);
-    }
   }
 
-  private getAllNonImplicitDependents(projects: string[]): string[] {
-    return projects
-      .flatMap((project) => {
-        const dependentProjectNames =
-          this.getNonImplicitDependentsForProject(project);
-        this.tmpCachedDependentProjects.set(project, dependentProjectNames);
-        return dependentProjectNames;
-      })
-      .filter((dep) => !this.allProjectsToProcess.has(dep));
-  }
+  /**
+   * Initialize the processor by building the group graph and preparing for processing.
+   * This method must be called before processGroups().
+   */
+  async init(): Promise<void> {
+    // Precompute project to release group mapping for O(1) lookups
+    this.setupProjectReleaseGroupMapping();
 
-  // TODO: Figure out the story for implicit dependencies and `nx release`, there is a bit of a mixture of project graph and manifest concerns right now
-  private getNonImplicitDependentsForProject(project: string): string[] {
-    return Object.entries(this.projectGraph.dependencies)
-      .filter(([_, deps]) =>
-        deps.some((dep) => {
-          // Is a dep, but not an implicit one, and the dep.source is included in at least one release group in the nx release config
-          return (
-            dep.target === project &&
-            dep.type !== 'implicit' &&
-            this.allProjectsConfiguredForNxRelease.has(dep.source)
-          );
-        })
-      )
-      .map(([projectName]) => projectName);
-  }
+    // Setup projects to process
+    this.setupProjectsToProcess();
 
-  async buildGroupGraph(): Promise<void> {
-    // Initialize group nodes
+    // Precompute dependency relationships
+    this.precomputeDependencyRelationships();
+
+    // Process dependency graph to find dependents to process
+    this.findDependentsToProcess();
+
+    // Build the group graph structure
     for (const group of this.releaseGroups) {
       this.groupGraph.set(group.name, {
         group,
@@ -211,7 +278,7 @@ export class ReleaseGroupProcessor {
       });
     }
 
-    // Build dependencies and dependents between groups
+    // Process each project within each release group
     for (const [releaseGroupName, releaseGroupNode] of this.groupGraph) {
       for (const projectName of releaseGroupNode.group.projects) {
         const projectGraphNode = this.projectGraph.nodes[projectName];
@@ -222,23 +289,6 @@ export class ReleaseGroupProcessor {
             ?.version as NxReleaseVersionV2Configuration | undefined;
           const releaseGroupVersionConfig = releaseGroupNode.group
             .version as NxReleaseVersionV2Configuration;
-
-          // TODO: should prefix handling actually move to the versionActions? Some prefixes are likely ecosystem specific...
-          const versionPrefix =
-            projectVersionConfig?.versionPrefix ||
-            releaseGroupVersionConfig?.versionPrefix;
-          if (
-            versionPrefix &&
-            !validReleaseVersionPrefixes.includes(versionPrefix)
-          ) {
-            throw new Error(
-              `Invalid value for versionPrefix: "${versionPrefix}"
-
-Valid values are: ${validReleaseVersionPrefixes
-                .map((s) => `"${s}"`)
-                .join(', ')}`
-            );
-          }
 
           const manifestRootsToUpdate =
             projectVersionConfig?.manifestRootsToUpdate ??
@@ -260,24 +310,24 @@ Valid values are: ${validReleaseVersionPrefixes
           }
           this.projectsToVersionActions.set(projectName, versionActions);
 
-          // Create a reusable project logger to use for the full lifecycle of the versioning process
-          const projectLogger = new ProjectLogger(projectName);
-          this.projectLoggers.set(projectName, projectLogger);
-
           // Check if the project has been filtered out of explicit versioning before continuing any further
           if (!this.allProjectsToProcess.has(projectName)) {
             continue;
           }
+
+          // Resolve the final configuration for the project
+          const finalConfigForProject = this.resolveFinalConfigForProject(
+            releaseGroupNode.group,
+            projectGraphNode
+          );
+          this.finalConfigsByProject.set(projectName, finalConfigForProject);
 
           let latestMatchingGitTag:
             | Awaited<ReturnType<typeof getLatestGitTagForPattern>>
             | undefined;
           const releaseTagPattern = releaseGroupNode.group.releaseTagPattern;
           // Cache the last matching git tag for relevant projects
-          const currentVersionResolver =
-            projectVersionConfig?.currentVersionResolver ||
-            releaseGroupVersionConfig?.currentVersionResolver;
-          if (currentVersionResolver === 'git-tag') {
+          if (finalConfigForProject.currentVersionResolver === 'git-tag') {
             latestMatchingGitTag = await getLatestGitTagForPattern(
               releaseTagPattern,
               {
@@ -291,37 +341,166 @@ Valid values are: ${validReleaseVersionPrefixes
             );
           }
 
-          const specifierSource = this.getSpecifierSource(
-            releaseGroupNode.group,
-            projectGraphNode
-          );
-
-          const fallbackCurrentVersionResolver =
-            this.getFallbackCurrentVersionResolver(
-              releaseGroupNode.group,
-              projectGraphNode
-            );
-
           // Cache the current version for the project
           const currentVersion = await resolveCurrentVersion(
             this.tree,
             projectGraphNode,
             releaseGroupNode.group,
             versionActions,
-            projectLogger,
-            this.cachedCurrentVersionsPerFixedReleaseGroup,
-            specifierSource,
+            this.projectLoggers.get(projectName)!,
+            this.currentVersionsPerFixedReleaseGroup,
+            finalConfigForProject.specifierSource,
             releaseTagPattern,
             latestMatchingGitTag,
-            fallbackCurrentVersionResolver
+            finalConfigForProject.fallbackCurrentVersionResolver
           );
           this.cachedCurrentVersions.set(projectName, currentVersion);
         }
+      }
+    }
 
-        // Process project dependencies
-        const projectDeps = this.projectGraph.dependencies[projectName] || [];
+    // Build the dependency relationships between groups
+    this.buildGroupDependencyGraph();
+
+    // Topologically sort the release groups and projects for efficient processing
+    this.sortedReleaseGroups = this.topologicallySortReleaseGroups();
+
+    // Sort projects within each release group
+    for (const group of this.releaseGroups) {
+      this.sortedProjects.set(
+        group.name,
+        this.topologicallySortProjects(group)
+      );
+    }
+
+    // Populate the dependent projects data
+    await this.populateDependentProjectsData();
+  }
+
+  /**
+   * Setup mapping from project to release group and cache updateDependents settings
+   */
+  private setupProjectReleaseGroupMapping(): void {
+    for (const group of this.releaseGroups) {
+      for (const project of group.projects) {
+        this.projectToReleaseGroup.set(project, group);
+
+        // Cache updateDependents setting relevant for each project
+        const updateDependents =
+          ((group.version as NxReleaseVersionV2Configuration)
+            ?.updateDependents as 'auto' | 'never') || 'auto';
+        this.projectToUpdateDependentsSetting.set(project, updateDependents);
+      }
+    }
+  }
+
+  /**
+   * Determine which projects should be processed
+   */
+  private setupProjectsToProcess(): void {
+    // Track the projects being directly versioned
+    let projectsToProcess = new Set<string>();
+
+    // Precompute all projects in nx release config
+    for (const [groupName, group] of Object.entries(
+      this.nxReleaseConfig.groups
+    )) {
+      for (const project of group.projects) {
+        this.allProjectsConfiguredForNxRelease.add(project);
+        // Create a project logger for the project
+        this.projectLoggers.set(project, new ProjectLogger(project));
+
+        // If group filtering is applied and the current group is captured by the filter, add the project to the projectsToProcess
+        if (this.options.filters.groups?.includes(groupName)) {
+          projectsToProcess.add(project);
+          // Otherwise, if project filtering is applied and the current project is captured by the filter, add the project to the projectsToProcess
+        } else if (this.options.filters.projects?.includes(project)) {
+          projectsToProcess.add(project);
+        }
+      }
+    }
+
+    // If no filters are applied, process all projects
+    if (
+      !this.options.filters.groups?.length &&
+      !this.options.filters.projects?.length
+    ) {
+      projectsToProcess = this.allProjectsConfiguredForNxRelease;
+    }
+
+    // If no projects are set to be processed, throw an error. This should be impossible because the filter validation in version.ts should have already caught this
+    if (projectsToProcess.size === 0) {
+      throw new Error(
+        'No projects are set to be processed, please report this as a bug on https://github.com/nrwl/nx/issues'
+      );
+    }
+
+    this.allProjectsToProcess = new Set(projectsToProcess);
+  }
+
+  /**
+   * Find all dependents that should be processed due to dependency updates
+   */
+  private findDependentsToProcess(): void {
+    const projectsToProcess = Array.from(this.allProjectsToProcess);
+    const allTrackedDependents = new Set<string>();
+    const dependentsToProcess = new Set<string>();
+
+    // BFS traversal of dependency graph to find all transitive dependents
+    let currentLevel = [...projectsToProcess];
+
+    while (currentLevel.length > 0) {
+      const nextLevel: string[] = [];
+
+      // Get all dependents for the current level at once
+      const dependents = this.getAllNonImplicitDependents(currentLevel);
+
+      // Process each dependent
+      for (const dep of dependents) {
+        // Skip if we've already seen this dependent or it's already in projectsToProcess
+        if (
+          allTrackedDependents.has(dep) ||
+          this.allProjectsToProcess.has(dep)
+        ) {
+          continue;
+        }
+
+        // Track that we've seen this dependent
+        allTrackedDependents.add(dep);
+
+        // If both the dependent and its dependency have updateDependents='auto',
+        // add the dependent to the projects to process
+        if (this.hasAutoUpdateDependents(dep)) {
+          // Check if any of its dependencies in the current level have auto update
+          const hasDependencyWithAutoUpdate = currentLevel.some(
+            (proj) =>
+              this.hasAutoUpdateDependents(proj) &&
+              this.getProjectDependents(proj).has(dep)
+          );
+
+          if (hasDependencyWithAutoUpdate) {
+            dependentsToProcess.add(dep);
+          }
+        }
+
+        // Add to next level for traversal
+        nextLevel.push(dep);
+      }
+
+      // Move to next level
+      currentLevel = nextLevel;
+    }
+
+    // Add all dependents that should be processed to allProjectsToProcess
+    dependentsToProcess.forEach((dep) => this.allProjectsToProcess.add(dep));
+  }
+
+  private buildGroupDependencyGraph(): void {
+    for (const [releaseGroupName, releaseGroupNode] of this.groupGraph) {
+      for (const projectName of releaseGroupNode.group.projects) {
+        const projectDeps = this.getProjectDependencies(projectName);
         for (const dep of projectDeps) {
-          const dependencyGroup = this.findGroupForProject(dep.target);
+          const dependencyGroup = this.getReleaseGroupNameForProject(dep);
           if (dependencyGroup && dependencyGroup !== releaseGroupName) {
             releaseGroupNode.dependencies.add(dependencyGroup);
             this.groupGraph
@@ -331,11 +510,13 @@ Valid values are: ${validReleaseVersionPrefixes
         }
       }
     }
+  }
 
-    // Populate the full data for the cached dependent projects now that all versionActions are available
+  private async populateDependentProjectsData(): Promise<void> {
     for (const [projectName, dependentProjectNames] of this
       .tmpCachedDependentProjects) {
       const dependentProjectsData: VersionDataEntry['dependentProjects'] = [];
+
       for (const dependentProjectName of dependentProjectNames) {
         const versionActions =
           this.getVersionActionsForProject(dependentProjectName);
@@ -353,17 +534,17 @@ Valid values are: ${validReleaseVersionPrefixes
           rawVersionSpec: currentVersion,
         });
       }
-      this.cachedDependentProjects.set(projectName, dependentProjectsData);
+
+      this.originalDependentProjectsPerProject.set(
+        projectName,
+        dependentProjectsData
+      );
     }
   }
 
-  findGroupForProject(projectName: string): string | null {
-    for (const [releaseGroupName, releaseGroupNode] of this.groupGraph) {
-      if (releaseGroupNode.group.projects.includes(projectName)) {
-        return releaseGroupName;
-      }
-    }
-    return null;
+  getReleaseGroupNameForProject(projectName: string): string | null {
+    const group = this.projectToReleaseGroup.get(projectName);
+    return group ? group.name : null;
   }
 
   getNextGroup(): string | null {
@@ -382,12 +563,36 @@ Valid values are: ${validReleaseVersionPrefixes
 
   async processGroups(): Promise<string[]> {
     const processOrder: string[] = [];
-    let nextGroup: string | null;
-    while ((nextGroup = this.getNextGroup()) !== null) {
+
+    // Use the topologically sorted groups instead of getNextGroup
+    for (const nextGroup of this.sortedReleaseGroups) {
+      // Skip groups that have already been processed (could happen with circular dependencies)
+      if (this.processedGroups.has(nextGroup)) {
+        continue;
+      }
+
+      const allDependenciesProcessed = Array.from(
+        this.groupGraph.get(nextGroup)!.dependencies
+      ).every((dep) => this.processedGroups.has(dep));
+
+      if (!allDependenciesProcessed) {
+        // If we encounter a group whose dependencies aren't all processed,
+        // it means there's a circular dependency that our topological sort broke.
+        // We need to process any unprocessed dependencies first.
+        for (const dep of this.groupGraph.get(nextGroup)!.dependencies) {
+          if (!this.processedGroups.has(dep)) {
+            await this.processGroup(dep);
+            this.processedGroups.add(dep);
+            processOrder.push(dep);
+          }
+        }
+      }
+
       await this.processGroup(nextGroup);
       this.processedGroups.add(nextGroup);
       processOrder.push(nextGroup);
     }
+
     return processOrder;
   }
 
@@ -506,11 +711,14 @@ Valid values are: ${validReleaseVersionPrefixes
       // No direct bump for this group, but we may still need to bump if a dependency group has been bumped
       let bumpedByDependency = false;
 
-      // Iterate through each project in the release group
-      for (const project of releaseGroup.projects) {
+      // Use sorted projects to check for dependencies in processed groups
+      const sortedProjects = this.sortedProjects.get(releaseGroup.name) || [];
+
+      // Iterate through each project in the release group in topological order
+      for (const project of sortedProjects) {
         const dependencies = this.projectGraph.dependencies[project] || [];
         for (const dep of dependencies) {
-          const depGroup = this.findGroupForProject(dep.target);
+          const depGroup = this.getReleaseGroupNameForProject(dep.target);
           if (
             depGroup &&
             depGroup !== releaseGroup.name &&
@@ -542,7 +750,8 @@ Valid values are: ${validReleaseVersionPrefixes
 
       // If any project in the group was bumped due to dependency changes, we must bump all projects in the fixed group
       if (bumpedByDependency) {
-        for (const project of releaseGroup.projects) {
+        // Update all projects in topological order
+        for (const project of sortedProjects) {
           if (!this.bumpedProjects.has(project)) {
             await this.bumpVersionForProject(
               project,
@@ -565,7 +774,7 @@ Valid values are: ${validReleaseVersionPrefixes
           this.versionData.set(project, {
             currentVersion: this.getCurrentCachedVersionForProject(project),
             newVersion: null,
-            dependentProjects: this.getCachedDependentProjects(project),
+            dependentProjects: this.getOriginalDependentProjects(project),
           });
           if (project === firstProject) {
             continue;
@@ -587,15 +796,19 @@ Valid values are: ${validReleaseVersionPrefixes
       bumpTypeReasonData
     );
 
-    // First, update versions for all projects in the fixed group
-    for (let i = 0; i < releaseGroup.projects.length; i++) {
-      const project = releaseGroup.projects[i];
+    // Use sorted projects for processing projects in the right order
+    const sortedProjects =
+      this.sortedProjects.get(releaseGroup.name) || releaseGroup.projects;
+
+    // First, update versions for all projects in the fixed group in topological order
+    for (let i = 0; i < sortedProjects.length; i++) {
+      const project = sortedProjects[i];
       const versionActions = this.getVersionActionsForProject(project);
       const projectLogger = this.getProjectLoggerForProject(project);
       const currentVersion = this.getCurrentCachedVersionForProject(project);
 
       // The first project's version was determined above, so this log is only appropriate for the remaining projects
-      if (i > 0) {
+      if (project !== firstProject) {
         projectLogger.buffer(
           `❓ Applied version ${newVersion} directly, because the project is a member of a fixed release group containing ${firstProject}`
         );
@@ -620,13 +833,13 @@ Valid values are: ${validReleaseVersionPrefixes
       this.versionData.set(project, {
         currentVersion,
         newVersion,
-        dependentProjects: this.getCachedDependentProjects(project),
+        dependentProjects: this.getOriginalDependentProjects(project),
       });
     }
 
-    // Then, update dependencies for all projects in the fixed group
+    // Then, update dependencies for all projects in the fixed group, also in topological order
     if (bumped) {
-      for (const project of releaseGroup.projects) {
+      for (const project of sortedProjects) {
         await this.updateDependenciesForProject(project);
       }
     }
@@ -665,9 +878,16 @@ Valid values are: ${validReleaseVersionPrefixes
       }
     }
 
-    // Second pass: Update versions
-    for (const project of releaseGroupFilteredProjects) {
-      if (projectsToUpdate.has(project)) {
+    // Second pass: Update versions using topologically sorted projects
+    // This ensures dependencies are processed before dependents
+    const sortedProjects = this.sortedProjects.get(releaseGroup.name) || [];
+
+    // Process projects in topological order
+    for (const project of sortedProjects) {
+      if (
+        projectsToUpdate.has(project) &&
+        releaseGroupFilteredProjects.has(project)
+      ) {
         const {
           bumpType: finalBumpType,
           bumpTypeReason: finalBumpTypeReason,
@@ -686,9 +906,12 @@ Valid values are: ${validReleaseVersionPrefixes
       }
     }
 
-    // Third pass: Update dependencies
-    for (const project of releaseGroupFilteredProjects) {
-      if (projectsToUpdate.has(project)) {
+    // Third pass: Update dependencies also in topological order
+    for (const project of sortedProjects) {
+      if (
+        projectsToUpdate.has(project) &&
+        releaseGroupFilteredProjects.has(project)
+      ) {
         await this.updateDependenciesForProject(project);
       }
     }
@@ -715,16 +938,12 @@ Valid values are: ${validReleaseVersionPrefixes
 
     const projectGraphNode = this.projectGraph.nodes[projectName];
     const projectLogger = this.getProjectLoggerForProject(projectName);
-    // TODO: cache project -> specifierSource
-    const specifierSource = this.getSpecifierSource(
-      releaseGroup,
-      projectGraphNode
-    );
+    const cachedFinalConfigForProject =
+      this.getCachedFinalConfigForProject(projectName);
 
-    const fallbackCurrentVersionResolver =
-      this.getFallbackCurrentVersionResolver(releaseGroup, projectGraphNode);
-
-    if (specifierSource === 'conventional-commits') {
+    if (
+      cachedFinalConfigForProject.specifierSource === 'conventional-commits'
+    ) {
       const currentVersion =
         this.getCurrentCachedVersionForProject(projectName);
       const bumpType = await deriveSpecifierFromConventionalCommits(
@@ -735,7 +954,7 @@ Valid values are: ${validReleaseVersionPrefixes
         projectGraphNode,
         !!prerelease(currentVersion ?? ''),
         this.cachedLatestMatchingGitTag.get(projectName),
-        fallbackCurrentVersionResolver,
+        cachedFinalConfigForProject.fallbackCurrentVersionResolver,
         this.options.preid
       );
       return {
@@ -775,7 +994,7 @@ Valid values are: ${validReleaseVersionPrefixes
       }
       return `${log} within release group "${releaseGroup.name}"`;
     };
-    if (specifierSource === 'prompt') {
+    if (cachedFinalConfigForProject.specifierSource === 'prompt') {
       let specifier: SemverBumpType | SemverVersion;
       if (releaseGroup.projectsRelationship === 'independent') {
         specifier = await resolveSemverSpecifierFromPrompt(
@@ -838,6 +1057,106 @@ Valid values are: ${validReleaseVersionPrefixes
     return currentVersion;
   }
 
+  private getCachedFinalConfigForProject(
+    projectName: string
+  ): NxReleaseVersionV2Configuration {
+    const cachedFinalConfig = this.finalConfigsByProject.get(projectName);
+    if (!cachedFinalConfig) {
+      throw new Error(
+        `Unexpected error: No cached config found for project ${projectName}, please report this as a bug on https://github.com/nrwl/nx/issues`
+      );
+    }
+    return cachedFinalConfig;
+  }
+
+  /**
+   * Apply project and release group precedence and default values, as well as validate the final configuration,
+   * ready to be cached.
+   */
+  private resolveFinalConfigForProject(
+    releaseGroup: ReleaseGroupWithName,
+    projectGraphNode: ProjectGraphProjectNode
+  ) {
+    const releaseGroupVersionConfig = releaseGroup.version as
+      | NxReleaseVersionV2Configuration
+      | undefined;
+    const projectVersionConfig = projectGraphNode.data.release?.version as
+      | NxReleaseVersionV2Configuration
+      | undefined;
+
+    /**
+     * specifierSource
+     *
+     * If the user has provided a specifier, it always takes precedence,
+     * so the effective specifier source is 'prompt', regardless of what
+     * the project or release group config says.
+     */
+    const specifierSource = this.userGivenSpecifier
+      ? 'prompt'
+      : projectVersionConfig?.specifierSource ??
+        releaseGroupVersionConfig?.specifierSource ??
+        'prompt';
+
+    /**
+     * versionPrefix
+     */
+    const versionPrefix =
+      projectVersionConfig?.versionPrefix ??
+      releaseGroupVersionConfig?.versionPrefix ??
+      'auto';
+    if (versionPrefix && !validReleaseVersionPrefixes.includes(versionPrefix)) {
+      throw new Error(
+        `Invalid value for versionPrefix: "${versionPrefix}"
+
+Valid values are: ${validReleaseVersionPrefixes
+          .map((s) => `"${s}"`)
+          .join(', ')}`
+      );
+    }
+
+    /**
+     * currentVersionResolver
+     */
+    const currentVersionResolver =
+      projectVersionConfig?.currentVersionResolver ??
+      releaseGroupVersionConfig?.currentVersionResolver;
+    if (
+      specifierSource === 'conventional-commits' &&
+      currentVersionResolver !== 'git-tag'
+    ) {
+      throw new Error(
+        `Invalid currentVersionResolver "${currentVersionResolver}" provided for project "${projectGraphNode.name}". Must be "git-tag" when "specifierSource" is "conventional-commits"`
+      );
+    }
+
+    /**
+     * preserveLocalDependencyProtocols
+     *
+     * This was false by default in legacy versioning, but is true by default now.
+     */
+    const preserveLocalDependencyProtocols =
+      projectVersionConfig?.preserveLocalDependencyProtocols ??
+      releaseGroupVersionConfig?.preserveLocalDependencyProtocols ??
+      true;
+
+    /**
+     * fallbackCurrentVersionResolver
+     */
+    const fallbackCurrentVersionResolver =
+      projectVersionConfig?.fallbackCurrentVersionResolver ??
+      releaseGroupVersionConfig?.fallbackCurrentVersionResolver ??
+      // Always fall back to disk if this is the first release
+      (this.options.firstRelease ? 'disk' : undefined);
+
+    return {
+      specifierSource,
+      currentVersionResolver,
+      fallbackCurrentVersionResolver,
+      versionPrefix,
+      preserveLocalDependencyProtocols,
+    };
+  }
+
   private async calculateNewVersion(
     project: string,
     bumpType: SemverBumpType | SemverVersion,
@@ -880,29 +1199,11 @@ Valid values are: ${validReleaseVersionPrefixes
     }
 
     const versionActions = this.getVersionActionsForProject(projectName);
-    const releaseGroup = versionActions.releaseGroup;
-    const projectGraphNode = versionActions.projectGraphNode;
+    const cachedFinalConfigForProject =
+      this.getCachedFinalConfigForProject(projectName);
 
     const dependenciesToUpdate: Record<string, string> = {};
     const dependencies = this.projectGraph.dependencies[projectName] || [];
-
-    const projectVersionConfig = projectGraphNode.data.release?.version as
-      | NxReleaseVersionV2Configuration
-      | undefined;
-    const releaseGroupVersionConfig =
-      releaseGroup.version as NxReleaseVersionV2Configuration;
-
-    // Get the versionPrefix from config, defaulting to 'auto'
-    const versionPrefix =
-      projectVersionConfig?.versionPrefix ??
-      releaseGroupVersionConfig?.versionPrefix ??
-      'auto';
-
-    // This was false by default in legacy versioning, but is true by default now
-    const preserveLocalDependencyProtocols =
-      projectVersionConfig?.preserveLocalDependencyProtocols ??
-      releaseGroupVersionConfig?.preserveLocalDependencyProtocols ??
-      true;
 
     for (const dep of dependencies) {
       if (
@@ -922,19 +1223,20 @@ Valid values are: ${validReleaseVersionPrefixes
           }
           // If preserveLocalDependencyProtocols is true, and the dependency uses a local dependency protocol, skip updating the dependency
           if (
-            preserveLocalDependencyProtocols &&
+            cachedFinalConfigForProject.preserveLocalDependencyProtocols &&
             versionActions.isLocalDependencyProtocol(currentDependencyVersion)
           ) {
             continue;
           }
 
-          // TODO: should prefix handling actually move to the versionActions? Some prefixes are likely ecosystem specific...
           let finalPrefix = '';
-          if (versionPrefix === 'auto') {
+          if (cachedFinalConfigForProject.versionPrefix === 'auto') {
             const prefixMatch = currentDependencyVersion?.match(/^([~^=])/);
             finalPrefix = prefixMatch ? prefixMatch[1] : '';
-          } else if (['~', '^', '='].includes(versionPrefix)) {
-            finalPrefix = versionPrefix;
+          } else if (
+            ['~', '^', '='].includes(cachedFinalConfigForProject.versionPrefix)
+          ) {
+            finalPrefix = cachedFinalConfigForProject.versionPrefix;
           }
 
           // Remove any existing prefix from the new version before applying the finalPrefix
@@ -998,12 +1300,30 @@ Valid values are: ${validReleaseVersionPrefixes
     this.versionData.set(projectName, {
       currentVersion,
       newVersion,
-      dependentProjects: this.getCachedDependentProjects(projectName),
+      dependentProjects: this.getOriginalDependentProjects(projectName),
     });
     this.bumpedProjects.add(projectName);
 
-    // Only update dependencies for dependents if updateDependents is 'auto'
-    if (this.updateDependents === 'auto') {
+    // Find the release group for this project
+    const releaseGroupName = this.getReleaseGroupNameForProject(projectName);
+    if (!releaseGroupName) {
+      projectLogger.buffer(
+        `⚠️ Cannot find release group for ${projectName}, skipping dependent updates`
+      );
+      return;
+    }
+
+    const releaseGroup = this.groupGraph.get(releaseGroupName)!.group;
+    const releaseGroupVersionConfig =
+      releaseGroup.version as NxReleaseVersionV2Configuration;
+
+    // Get updateDependents from the release group level config
+    const updateDependents =
+      (releaseGroupVersionConfig?.updateDependents as 'auto' | 'never') ||
+      'auto';
+
+    // Only update dependencies for dependents if the group's updateDependents is 'auto'
+    if (updateDependents === 'auto') {
       const dependents = this.getNonImplicitDependentsForProject(projectName);
       await this.updateDependenciesForDependents(dependents);
 
@@ -1022,7 +1342,7 @@ Valid values are: ${validReleaseVersionPrefixes
       }
     } else {
       projectLogger.buffer(
-        `⏩ Skipping dependent updates as "updateDependents" is not "auto"`
+        `⏩ Skipping dependent updates as "updateDependents" in release group "${releaseGroupName}" is not "auto"`
       );
     }
   }
@@ -1040,10 +1360,10 @@ Valid values are: ${validReleaseVersionPrefixes
     }
   }
 
-  private getCachedDependentProjects(
+  private getOriginalDependentProjects(
     project: string
   ): VersionDataEntry['dependentProjects'] {
-    return this.cachedDependentProjects.get(project) || [];
+    return this.originalDependentProjectsPerProject.get(project) || [];
   }
 
   private async propagateChanges(
@@ -1054,6 +1374,24 @@ Valid values are: ${validReleaseVersionPrefixes
     const releaseGroupFilteredProjects =
       this.releaseGroupToFilteredProjects.get(releaseGroup);
 
+    // Get updateDependents from the release group level config
+    const releaseGroupVersionConfig =
+      releaseGroup.version as NxReleaseVersionV2Configuration;
+    const updateDependents =
+      (releaseGroupVersionConfig?.updateDependents as 'auto' | 'never') ||
+      'auto';
+
+    // If updateDependents is not 'auto', skip propagating changes to this group
+    if (updateDependents !== 'auto') {
+      const projectLogger = this.getProjectLoggerForProject(
+        releaseGroupFilteredProjects.values().next().value
+      );
+      projectLogger.buffer(
+        `⏩ Skipping dependency updates for release group "${releaseGroupName}" as "updateDependents" is not "auto"`
+      );
+      return;
+    }
+
     let groupBumped = false;
     let bumpType: SemverBumpType = 'none';
 
@@ -1062,7 +1400,9 @@ Valid values are: ${validReleaseVersionPrefixes
       const project = releaseGroupFilteredProjects[0];
       const dependencies = this.projectGraph.dependencies[project] || [];
       const hasDependencyInChangedGroup = dependencies.some(
-        (dep) => this.findGroupForProject(dep.target) === changedDependencyGroup
+        (dep) =>
+          this.getReleaseGroupNameForProject(dep.target) ===
+          changedDependencyGroup
       );
 
       if (hasDependencyInChangedGroup) {
@@ -1109,7 +1449,7 @@ Valid values are: ${validReleaseVersionPrefixes
     return bumpType;
   }
 
-  // TODO: Support influencing the side effect bump in a future version, patch for now as before
+  // TODO: Support influencing the side effect bump in a future version, always patch for now like in legacy versioning
   private determineSideEffectBump(
     releaseGroup: ReleaseGroupWithName,
     dependencyBumpType: SemverBumpType
@@ -1118,46 +1458,112 @@ Valid values are: ${validReleaseVersionPrefixes
     return sideEffectBump as SemverBumpType;
   }
 
-  private getFallbackCurrentVersionResolver(
-    releaseGroup: ReleaseGroupWithName,
-    projectGraphNode: ProjectGraphProjectNode
-  ): 'disk' | undefined {
-    const releaseGroupVersionConfig =
-      releaseGroup.version as NxReleaseVersionV2Configuration;
-    const projectVersionConfig = projectGraphNode.data.release
-      ?.version as NxReleaseVersionV2Configuration;
-    return (
-      // Project config is the highest priority ahead of release group config
-      projectVersionConfig?.fallbackCurrentVersionResolver ??
-      releaseGroupVersionConfig?.fallbackCurrentVersionResolver ??
-      // Always fall back to disk if this is the first release
-      (this.options.firstRelease ? 'disk' : undefined)
-    );
+  private getProjectDependents(project: string): Set<string> {
+    return this.projectToDependents.get(project) || new Set();
   }
 
-  private getSpecifierSource(
-    releaseGroup: ReleaseGroupWithName,
-    projectGraphNode: ProjectGraphProjectNode
-  ): Exclude<NxReleaseVersionV2Configuration['specifierSource'], undefined> {
-    /**
-     * If the user has provided a specifier, it always takes precedence,
-     * so the effective specifier source is 'prompt', regardless of what
-     * the project or release group config says.
-     */
-    if (this.userGivenSpecifier) {
-      return 'prompt';
-    }
-    const releaseGroupVersionConfig = releaseGroup.version as
-      | NxReleaseVersionV2Configuration
-      | undefined;
-    const projectVersionConfig = projectGraphNode.data.release?.version as
-      | NxReleaseVersionV2Configuration
-      | undefined;
-    // The default specifier source is 'prompt'
-    return (
-      projectVersionConfig?.specifierSource ??
-      releaseGroupVersionConfig?.specifierSource ??
-      'prompt'
+  private getAllNonImplicitDependents(projects: string[]): string[] {
+    return projects
+      .flatMap((project) => {
+        const dependentProjectNames =
+          this.getNonImplicitDependentsForProject(project);
+        this.tmpCachedDependentProjects.set(project, dependentProjectNames);
+        return dependentProjectNames;
+      })
+      .filter((dep) => !this.allProjectsToProcess.has(dep));
+  }
+
+  private getNonImplicitDependentsForProject(project: string): string[] {
+    // Use the cached dependents for O(1) lookup instead of O(n) scan
+    return Array.from(this.getProjectDependents(project));
+  }
+
+  private hasAutoUpdateDependents(projectName: string): boolean {
+    return this.projectToUpdateDependentsSetting.get(projectName) === 'auto';
+  }
+
+  private topologicallySortReleaseGroups(): string[] {
+    // Get all release group names
+    const groupNames = Array.from(this.groupGraph.keys());
+
+    // Function to get dependencies of a group
+    const getGroupDependencies = (groupName: string): string[] => {
+      const groupNode = this.groupGraph.get(groupName);
+      if (!groupNode) {
+        return [];
+      }
+      return Array.from(groupNode.dependencies);
+    };
+
+    // Perform topological sort
+    return topologicalSort(groupNames, getGroupDependencies);
+  }
+
+  private topologicallySortProjects(
+    releaseGroup: ReleaseGroupWithName
+  ): string[] {
+    // For fixed relationship groups, the order doesn't matter since all projects will
+    // be versioned identically, but we still sort them for consistency
+    const projects = releaseGroup.projects.filter((p) =>
+      // Only include projects that are in allProjectsToProcess
+      this.allProjectsToProcess.has(p)
     );
+
+    // Function to get dependencies of a project that are in the same release group
+    const getProjectDependenciesInSameGroup = (project: string): string[] => {
+      const deps = this.getProjectDependencies(project);
+      // Only include dependencies that are in the same release group and in allProjectsToProcess
+      return Array.from(deps).filter(
+        (dep) =>
+          this.getReleaseGroupNameForProject(dep) === releaseGroup.name &&
+          this.allProjectsToProcess.has(dep)
+      );
+    };
+
+    // Perform topological sort
+    return topologicalSort(projects, getProjectDependenciesInSameGroup);
+  }
+
+  /**
+   * Precompute project -> dependents/dependencies relationships for O(1) lookups
+   */
+  private precomputeDependencyRelationships(): void {
+    for (const [projectName, deps] of Object.entries(
+      this.projectGraph.dependencies
+    )) {
+      // Skip if project is not in the release config
+      if (!this.allProjectsConfiguredForNxRelease.has(projectName)) {
+        continue;
+      }
+
+      // Create a new set for this project's dependencies
+      if (!this.projectToDependencies.has(projectName)) {
+        this.projectToDependencies.set(projectName, new Set());
+      }
+
+      for (const dep of deps) {
+        // Skip implicit dependencies or dependencies not in the release config
+        // TODO: holistically figure out how to handle implicit dependencies with nx release
+        if (
+          dep.type === 'implicit' ||
+          !this.allProjectsConfiguredForNxRelease.has(dep.target)
+        ) {
+          continue;
+        }
+
+        // Add this dependency to the project's dependencies
+        this.projectToDependencies.get(projectName)!.add(dep.target);
+
+        // Add this project as a dependent of the target
+        if (!this.projectToDependents.has(dep.target)) {
+          this.projectToDependents.set(dep.target, new Set());
+        }
+        this.projectToDependents.get(dep.target)!.add(projectName);
+      }
+    }
+  }
+
+  private getProjectDependencies(project: string): Set<string> {
+    return this.projectToDependencies.get(project) || new Set();
   }
 }

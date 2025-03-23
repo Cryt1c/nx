@@ -108,7 +108,7 @@ describe('Multiple Release Groups', () => {
         }
       );
 
-      await processor.buildGroupGraph();
+      await processor.init();
       await processor.processGroups();
 
       // Called for each project
@@ -204,7 +204,7 @@ describe('Multiple Release Groups', () => {
         }
       );
 
-      await processor.buildGroupGraph();
+      await processor.init();
       await processor.processGroups();
 
       // Called for each project
@@ -301,7 +301,7 @@ describe('Multiple Release Groups', () => {
         }
       );
 
-      await processor.buildGroupGraph();
+      await processor.init();
       await processor.processGroups();
 
       // Called for each project
@@ -395,7 +395,7 @@ describe('Multiple Release Groups', () => {
         }
       );
 
-      await processor.buildGroupGraph();
+      await processor.init();
       await processor.processGroups();
 
       expect(mockResolveVersionActionsForProject).toHaveBeenCalledTimes(4);
@@ -492,7 +492,7 @@ describe('Multiple Release Groups', () => {
         }
       );
 
-      await processor.buildGroupGraph();
+      await processor.init();
       await processor.processGroups();
 
       expect(mockResolveVersionActionsForProject).toHaveBeenCalledTimes(4);
@@ -577,7 +577,7 @@ describe('Multiple Release Groups', () => {
         }
       );
 
-      await processor.buildGroupGraph();
+      await processor.init();
       await processor.processGroups();
 
       expect(mockResolveVersionActionsForProject).toHaveBeenCalledTimes(4);
@@ -668,7 +668,7 @@ describe('Multiple Release Groups', () => {
           }
         );
 
-        await processor.buildGroupGraph();
+        await processor.init();
         await processor.processGroups();
 
         // Called for each project
@@ -756,7 +756,7 @@ describe('Multiple Release Groups', () => {
           }
         );
 
-        await processor.buildGroupGraph();
+        await processor.init();
         await processor.processGroups();
 
         // Called for each project
@@ -849,7 +849,7 @@ describe('Multiple Release Groups', () => {
           }
         );
 
-        await processor.buildGroupGraph();
+        await processor.init();
         await processor.processGroups();
 
         // Called for each project

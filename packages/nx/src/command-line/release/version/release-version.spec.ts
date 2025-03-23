@@ -131,7 +131,7 @@ async function releaseVersionGeneratorForTest(
   );
 
   try {
-    await processor.buildGroupGraph();
+    await processor.init();
     await processor.processGroups();
 
     return {

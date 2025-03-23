@@ -99,7 +99,7 @@ describe('ReleaseGroupProcessor', () => {
         filters,
       }
     );
-    await processor.buildGroupGraph();
+    await processor.init();
 
     mockDeriveSpecifierFromConventionalCommits.mockImplementation(() => {
       // This should only be called once for this group (for the first project)
@@ -168,7 +168,7 @@ describe('ReleaseGroupProcessor', () => {
         filters,
       }
     );
-    await processor.buildGroupGraph();
+    await processor.init();
 
     mockDeriveSpecifierFromConventionalCommits.mockImplementation(() => {
       // This should only be called once for this group (for the first project)
@@ -243,7 +243,7 @@ describe('ReleaseGroupProcessor', () => {
         filters,
       }
     );
-    await processor.buildGroupGraph();
+    await processor.init();
 
     mockDeriveSpecifierFromConventionalCommits.mockImplementation(() => {
       // This should only be called once for this group (for the first project)
@@ -317,7 +317,7 @@ describe('ReleaseGroupProcessor', () => {
       }
     );
 
-    await processor.buildGroupGraph();
+    await processor.init();
 
     mockDeriveSpecifierFromConventionalCommits.mockImplementation(
       (_, __, ___, ____, { name: projectName }) => {
@@ -397,7 +397,7 @@ describe('ReleaseGroupProcessor', () => {
           filters,
         }
       );
-      await processor.buildGroupGraph();
+      await processor.init();
     });
 
     it('should not bump anything when no specifiers are resolved', async () => {
@@ -522,7 +522,7 @@ describe('ReleaseGroupProcessor', () => {
         }
       );
 
-      await processor.buildGroupGraph();
+      await processor.init();
 
       mockDeriveSpecifierFromConventionalCommits.mockImplementation(
         (_, __, ___, ____, { name: projectName }) => {
@@ -637,7 +637,7 @@ describe('ReleaseGroupProcessor', () => {
             filters,
           }
         );
-        await processor.buildGroupGraph();
+        await processor.init();
 
         mockDeriveSpecifierFromConventionalCommits.mockImplementation(() => {
           // This should only be called once for this group (for the first project)
@@ -758,7 +758,7 @@ describe('ReleaseGroupProcessor', () => {
             filters,
           }
         );
-        await processor.buildGroupGraph();
+        await processor.init();
 
         mockDeriveSpecifierFromConventionalCommits.mockImplementation(
           (_, __, ___, ____, { name: projectName }) => {
@@ -957,7 +957,7 @@ describe('ReleaseGroupProcessor', () => {
             filters,
           }
         );
-        await processor.buildGroupGraph();
+        await processor.init();
 
         mockDeriveSpecifierFromConventionalCommits.mockImplementation(
           (_, __, ___, ____, { name: projectName }) => {
@@ -1120,7 +1120,7 @@ describe('ReleaseGroupProcessor', () => {
             filters,
           }
         );
-        await processor.buildGroupGraph();
+        await processor.init();
 
         mockDeriveSpecifierFromConventionalCommits.mockImplementation(
           (_, __, ___, ____, { name: projectName }) => {
@@ -1205,7 +1205,7 @@ describe('ReleaseGroupProcessor', () => {
             filters,
           }
         );
-        await processor.buildGroupGraph();
+        await processor.init();
 
         // This time bump projectL which would otherwise cause a cascade of bumps across projectK and projectJ, but should not here because updateDependents is set to "never"
         mockDeriveSpecifierFromConventionalCommits.mockImplementation(
@@ -1299,7 +1299,7 @@ describe('ReleaseGroupProcessor', () => {
           filters,
         }
       );
-      await processor.buildGroupGraph();
+      await processor.init();
 
       mockDeriveSpecifierFromConventionalCommits.mockImplementation(
         () => 'minor'
@@ -1378,7 +1378,7 @@ describe('ReleaseGroupProcessor', () => {
           filters,
         }
       );
-      await processor.buildGroupGraph();
+      await processor.init();
 
       mockDeriveSpecifierFromConventionalCommits.mockImplementation(
         () => 'minor'
@@ -1463,7 +1463,7 @@ describe('ReleaseGroupProcessor', () => {
           filters,
         }
       );
-      await processor.buildGroupGraph();
+      await processor.init();
 
       mockDeriveSpecifierFromConventionalCommits.mockImplementation(
         () => 'minor'
